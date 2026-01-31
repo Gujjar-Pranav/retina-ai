@@ -33,7 +33,7 @@ def _safe(v, default: str = "—") -> str:
     if v is None:
         return default
     try:
-        if isinstance(v, float) and pd.isna(v):
+        if pd.isna(v):
             return default
     except Exception:
         pass
@@ -45,12 +45,19 @@ def _fmt_float(v: Any, ndigits: int = 4, default: str = "—") -> str:
     try:
         if v is None:
             return default
-        if isinstance(v, float) and pd.isna(v):
-            return default
+        try:
+            if pd.isna(v):
+                return default
+        except Exception:
+            pass
+
         s = str(v).strip()
         if s == "":
             return default
-        return f"{float(v):.{ndigits}f}"
+
+        # handle comma decimals or accidental text
+        s = s.replace(",", ".")
+        return f"{float(s):.{ndigits}f}"
     except Exception:
         return default
 
@@ -74,9 +81,9 @@ def _to_bool(v: Any) -> bool:
     if v is None:
         return False
 
-    # pandas NaN
+    # pandas NaN (covers many types)
     try:
-        if isinstance(v, float) and pd.isna(v):
+        if pd.isna(v):
             return False
     except Exception:
         pass
@@ -84,37 +91,41 @@ def _to_bool(v: Any) -> bool:
     if isinstance(v, bool):
         return v
 
-    # ints
-    try:
-        import numpy as np  # local import safe
-        if isinstance(v, (int, np.integer)):
-            return int(v) != 0
-        if isinstance(v, (float, np.floating)):
+    # numeric
+    if isinstance(v, (int, float)):
+        try:
             return float(v) != 0.0
-    except Exception:
-        # if numpy not present for some reason
-        if isinstance(v, int):
-            return int(v) != 0
-        if isinstance(v, float):
-            return float(v) != 0.0
+        except Exception:
+            return False
 
+    # strings
     if isinstance(v, str):
         s = v.strip().lower()
         if s in {"yes", "y", "true", "t", "1"}:
             return True
         if s in {"no", "n", "false", "f", "0", "", "none", "na", "n/a"}:
             return False
-        # unknown strings -> default False (safer for clinical flags)
+        # unknown strings -> False (safer)
         return False
 
     return False
 
 
 def _first(d: Dict[str, Any], keys: List[str], default=None):
-    """Return first available key in dict."""
+    """Return first available key in dict (non-empty preferred)."""
     for k in keys:
         if k in d:
-            return d.get(k)
+            v = d.get(k)
+            try:
+                if pd.isna(v):
+                    continue
+            except Exception:
+                pass
+            if v is None:
+                continue
+            if str(v).strip() == "":
+                continue
+            return v
     return default
 
 
@@ -347,10 +358,11 @@ def generate_clinical_pdf(
     p_sex = _safe(_first(patient, ["sex", "gender"], default=None))
     p_dur = _safe(_first(patient, ["diabetes_years", "dm_years", "dm_duration", "diabetes_duration"], default=None))
 
-    # ✅ FIX: correct string bool parsing
-    p_htn = "Yes" if _to_bool(_first(patient, ["hypertension", "htn", "high_bp"], default=False)) else "No"
+    # ✅ FIXED Hypertension parsing
+    p_htn_raw = _first(patient, ["hypertension", "htn", "high_bp"], default=None)
+    p_htn = "Yes" if _to_bool(p_htn_raw) else "No"
 
-    # ✅ FIX: HbA1c key variants + better float parsing
+    # ✅ FIXED HbA1c key variants
     p_a1c_val = _first(patient, ["last_hba1c", "hba1c", "hba1c_last", "hbA1c", "hb_a1c"], default=None)
     p_a1c = _fmt_float(p_a1c_val, 1)
 
@@ -490,14 +502,12 @@ def generate_clinical_pdf(
     step = 4.5 * mm
 
     for i, item in enumerate(rf):
-        if i >= 6:
-            break
         yy = rf_y - step * i
         c.drawString(rf_x, yy, f"• {_clip(item, 52)}")
 
     if not rf:
         c.setFillColor(MUTED)
-        c.drawString(rf_x, rf_y, "• Not available")
+        c.drawString(rf_x, rf_y, "• No major risk factors recorded")
         c.setFillColor(INK)
 
     # Image quality card
