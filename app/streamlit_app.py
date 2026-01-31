@@ -1,33 +1,25 @@
 from __future__ import annotations
 
-# --- Path fix so Streamlit can see src/ ---
 import sys
-from pathlib import Path
 from datetime import datetime
-
-ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
-# ----------------------------------------
+from pathlib import Path
 
 import streamlit as st
 import torch
 
-from src.ui_style import inject_global_css
-from src.ui_sidebar import render_sidebar
-from src.ui_registry import render_registry
-from src.ui_screening import render_screening
 
-from src.auth import (
-    require_login,
-    sidebar_identity,
-    admin_create_user_panel,
-    can_access_registry,
-    can_access_screening,
-    can_access_reports,
-)
+def _ensure_project_root_on_path() -> Path:
+    """
+    Keep original behavior: add project root so `src/` imports work.
+    Moved into a function to satisfy Ruff E402 (no runtime code at module import time).
+    """
+    root = Path(__file__).resolve().parents[1]
+    if str(root) not in sys.path:
+        sys.path.insert(0, str(root))
+    return root
 
-from src.model_loader import build_and_load
+
+# NOTE: src.* imports happen AFTER root path is ensured (inside main)
 
 
 def choose_device() -> torch.device:
@@ -67,7 +59,6 @@ def render_reports_tab(root: Path) -> None:
     st.markdown(f"**Found:** {len(pdfs)} report(s)")
     st.markdown('<div class="spacer-8"></div>', unsafe_allow_html=True)
 
-    # Render latest first
     for p in pdfs[:50]:
         with st.container(border=True):
             c1, c2 = st.columns([3, 1], gap="large")
@@ -87,6 +78,23 @@ def render_reports_tab(root: Path) -> None:
 
 
 def main() -> None:
+    ROOT = _ensure_project_root_on_path()
+
+    # Import after path fix (no functionality change)
+    from src.auth import (
+        admin_create_user_panel,
+        can_access_registry,
+        can_access_reports,
+        can_access_screening,
+        require_login,
+        sidebar_identity,
+    )
+    from src.model_loader import build_and_load
+    from src.ui_registry import render_registry
+    from src.ui_screening import render_screening
+    from src.ui_sidebar import render_sidebar
+    from src.ui_style import inject_global_css
+
     st.set_page_config(
         page_title="Retina-AI — Clinical DR Screening",
         page_icon="🧿",
@@ -106,7 +114,7 @@ def main() -> None:
     admin_create_user_panel(ROOT, user)
 
     # Sidebar controls (ONLY for Screening users)
-    cfg = {}
+    cfg: dict = {}
     if can_access_screening(user.role):
         cfg = render_sidebar()
 
@@ -126,7 +134,7 @@ def main() -> None:
     if can_access_screening(user.role):
         try:
             model, backend = build_and_load(
-                model_path=cfg.get("model_path", ""),  # sidebar sets this
+                model_path=cfg.get("model_path", ""),
                 device=device,
             )
         except Exception as e:
@@ -154,7 +162,6 @@ def main() -> None:
                 render_registry(ROOT=ROOT)
 
             elif name == "Screening":
-                # model/backend guaranteed here
                 render_screening(
                     ROOT=ROOT,
                     device=device,
