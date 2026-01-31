@@ -1,7 +1,7 @@
 # src/screening_core.py
 from __future__ import annotations
 
-from typing import Dict, Any, Tuple, List
+from typing import Dict, Any, Tuple, List, Optional
 
 import numpy as np
 import pandas as pd
@@ -14,6 +14,45 @@ import torch.nn.functional as F
 IMG_SIZE = 224
 IMAGENET_MEAN = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1)
 IMAGENET_STD = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1)
+
+
+def _as_bool(v: Any) -> bool:
+    """
+    Robust boolean parser for Excel/pandas values.
+    Treats only true-like values as True.
+    - True, 1, "yes", "true", "1", "y" => True
+    - False, 0, "no", "false", "", None, NaN => False
+    """
+    try:
+        if v is None:
+            return False
+        # pandas NaN
+        if isinstance(v, float) and pd.isna(v):
+            return False
+        if pd.isna(v):
+            return False
+    except Exception:
+        pass
+
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, (int, np.integer)):
+        return int(v) == 1
+    if isinstance(v, (float, np.floating)):
+        # treat 1.0 as True, everything else False
+        try:
+            return float(v) == 1.0
+        except Exception:
+            return False
+    if isinstance(v, str):
+        s = v.strip().lower()
+        if s in {"yes", "true", "1", "y"}:
+            return True
+        if s in {"no", "false", "0", "n", ""}:
+            return False
+        return False
+
+    return False
 
 
 def pil_to_tensor(img: Image.Image) -> torch.Tensor:
@@ -77,79 +116,31 @@ def risk_stratification(p_dr: float) -> Tuple[str, str]:
     return "High", "1–4 weeks"
 
 
-# -----------------------------
-# FIX: Safe parsing helpers
-# -----------------------------
-def _to_bool(v: Any) -> bool:
-    """
-    Correctly interpret Excel/strings:
-    - True/False
-    - 1/0
-    - "Yes"/"No", "Y"/"N"
-    - "true"/"false"
-    """
-    if v is None:
-        return False
-
-    # pandas NaN
-    try:
-        if isinstance(v, float) and pd.isna(v):
-            return False
-    except Exception:
-        pass
-
-    if isinstance(v, bool):
-        return v
-
-    if isinstanceIN := isinstance(v, (int, np.integer)):
-        return int(v) != 0
-
-    if isinstance(v, (float, np.floating)):
-        # if it's a float but not NaN
-        return float(v) != 0.0
-
-    if isinstance(v, str):
-        s = v.strip().lower()
-        if s in {"yes", "y", "true", "t", "1"}:
-            return True
-        if s in {"no", "n", "false", "f", "0", "", "none", "na", "n/a"}:
-            return False
-        # last resort: non-empty string -> False would be safer for clinical flags
-        # but to avoid accidental True, we default to False
-        return False
-
-    # fallback
-    return False
-
-
-def _first_key(d: Dict[str, Any], keys: List[str]) -> Any:
-    for k in keys:
-        if k in d:
-            return d.get(k)
-    return None
-
-
 def derive_risk_factors(patient_row: Dict[str, Any]) -> List[str]:
     r: List[str] = []
 
-    # diabetes years could be stored under different keys
-    yrs = _first_key(patient_row, ["diabetes_years", "dm_years", "dm_duration", "diabetes_duration"])
+    # Diabetes duration
     try:
-        if yrs is not None and pd.notna(yrs) and float(yrs) >= 10:
-            r.append("Diabetes duration ≥ 10 years")
+        yrs = patient_row.get("diabetes_years", patient_row.get("diabetes_duration_years", None))
+        if pd.notna(yrs) and str(yrs).strip() != "":
+            if float(yrs) >= 10:
+                r.append("Diabetes duration ≥ 10 years")
     except Exception:
         pass
 
-    # FIX: hypertension string "No" must be treated as False
-    ht_val = _first_key(patient_row, ["hypertension", "htn", "high_bp"])
-    if _to_bool(ht_val):
-        r.append("Hypertension")
-
-    # HbA1c key variations
-    a1c = _first_key(patient_row, ["last_hba1c", "hba1c", "hba1c_last", "hbA1c", "hb_a1c"])
+    # Hypertension (FIXED)
     try:
-        if a1c is not None and pd.notna(a1c) and float(a1c) >= 7.5:
-            r.append("Elevated HbA1c (≥ 7.5)")
+        if _as_bool(patient_row.get("hypertension")):
+            r.append("Hypertension")
+    except Exception:
+        pass
+
+    # HbA1c (FIXED fallback)
+    try:
+        a1c = patient_row.get("last_hba1c", patient_row.get("hba1c", None))
+        if pd.notna(a1c) and str(a1c).strip() != "":
+            if float(a1c) >= 7.5:
+                r.append("Elevated HbA1c (≥ 7.5)")
     except Exception:
         pass
 
@@ -191,7 +182,7 @@ def build_recommendation(pred: str, risk_level: str, followup: str, quality_flag
 
 class GradCAM:
     """
-    Fixed: always upsamples CAM to 224x224.
+    Fixed: always upsamples CAM to 224x224 (no more 7x7 -> 224 broadcast crash).
     """
     def __init__(self, model: torch.nn.Module, target_layer: torch.nn.Module):
         self.model = model
@@ -213,7 +204,7 @@ class GradCAM:
 
     def generate(self, x: torch.Tensor, target_index: int = 1) -> np.ndarray:
         self.model.zero_grad(set_to_none=True)
-        logits = self.model(x)  # [1,2]
+        logits = self.model(x)                 # [1,2]
         score = logits[:, target_index].sum()
         score.backward()
 
