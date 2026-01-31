@@ -1,0 +1,14 @@
+# IDE
+.idea/
+
+# env
+.venv/
+
+# runtime data & outputs
+data/
+reports/
+.streamlit/secrets.toml
+
+# caches
+__pycache__/
+*.pyc
