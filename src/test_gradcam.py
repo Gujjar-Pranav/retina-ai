@@ -57,8 +57,20 @@ overlay_bgr = cv2.addWeighted(img_bgr, 0.6, heat_color, 0.4, 0)         # blend
 overlay = cv2.cvtColor(overlay_bgr, cv2.COLOR_BGR2RGB)                  # back to RGB
 
 plt.figure(figsize=(12,4))
-plt.subplot(1,3,1); plt.imshow(img_resized); plt.axis("off"); plt.title("Original")
-plt.subplot(1,3,2); plt.imshow(cam, cmap="jet"); plt.axis("off"); plt.title("Grad-CAM")
-plt.subplot(1,3,3); plt.imshow(overlay); plt.axis("off"); plt.title("Overlay")
+plt.subplot(1,3,1);
+plt.imshow(img_resized);
+plt.axis("off");
+plt.title("Original")
+
+plt.subplot(1,3,2);
+plt.imshow(cam, cmap="jet");
+plt.axis("off");
+plt.title("Grad-CAM")
+
+plt.subplot(1,3,3);
+plt.imshow(overlay);
+plt.axis("off");
+plt.title("Overlay")
+
 plt.tight_layout()
 plt.show()
