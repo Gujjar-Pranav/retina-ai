@@ -77,10 +77,16 @@ def risk_stratification(p_dr: float) -> Tuple[str, str]:
     return "High", "1–4 weeks"
 
 
+# -----------------------------
+# FIX: Safe parsing helpers
+# -----------------------------
 def _to_bool(v: Any) -> bool:
     """
-    Robust boolean parsing for values coming from Excel / forms.
-    Handles: True/False, 1/0, "Yes"/"No", "TRUE"/"FALSE", "Y"/"N", "1"/"0", NaN, blanks.
+    Correctly interpret Excel/strings:
+    - True/False
+    - 1/0
+    - "Yes"/"No", "Y"/"N"
+    - "true"/"false"
     """
     if v is None:
         return False
@@ -95,55 +101,55 @@ def _to_bool(v: Any) -> bool:
     if isinstance(v, bool):
         return v
 
-    # numeric
-    if isinstance(v, (int, np.integer)):
+    if isinstanceIN := isinstance(v, (int, np.integer)):
         return int(v) != 0
+
     if isinstance(v, (float, np.floating)):
-        try:
-            if pd.isna(v):
-                return False
-        except Exception:
-            pass
+        # if it's a float but not NaN
         return float(v) != 0.0
 
-    s = str(v).strip().lower()
-    if s == "" or s in {"nan", "none", "null"}:
+    if isinstance(v, str):
+        s = v.strip().lower()
+        if s in {"yes", "y", "true", "t", "1"}:
+            return True
+        if s in {"no", "n", "false", "f", "0", "", "none", "na", "n/a"}:
+            return False
+        # last resort: non-empty string -> False would be safer for clinical flags
+        # but to avoid accidental True, we default to False
         return False
 
-    if s in {"yes", "y", "true", "t", "1", "on"}:
-        return True
-    if s in {"no", "n", "false", "f", "0", "off"}:
-        return False
-
-    # fallback: treat unknown strings as False (safer clinically)
+    # fallback
     return False
+
+
+def _first_key(d: Dict[str, Any], keys: List[str]) -> Any:
+    for k in keys:
+        if k in d:
+            return d.get(k)
+    return None
 
 
 def derive_risk_factors(patient_row: Dict[str, Any]) -> List[str]:
     r: List[str] = []
 
-    # Diabetes duration
+    # diabetes years could be stored under different keys
+    yrs = _first_key(patient_row, ["diabetes_years", "dm_years", "dm_duration", "diabetes_duration"])
     try:
-        yrs = patient_row.get("diabetes_years", None)
-        if yrs is not None and not (isinstance(yrs, float) and pd.isna(yrs)):
-            if float(yrs) >= 10:
-                r.append("Diabetes duration ≥ 10 years")
+        if yrs is not None and pd.notna(yrs) and float(yrs) >= 10:
+            r.append("Diabetes duration ≥ 10 years")
     except Exception:
         pass
 
-    # Hypertension (FIXED)
-    try:
-        if _to_bool(patient_row.get("hypertension", False)):
-            r.append("Hypertension")
-    except Exception:
-        pass
+    # FIX: hypertension string "No" must be treated as False
+    ht_val = _first_key(patient_row, ["hypertension", "htn", "high_bp"])
+    if _to_bool(ht_val):
+        r.append("Hypertension")
 
-    # HbA1c
+    # HbA1c key variations
+    a1c = _first_key(patient_row, ["last_hba1c", "hba1c", "hba1c_last", "hbA1c", "hb_a1c"])
     try:
-        a1c = patient_row.get("last_hba1c", None)
-        if a1c is not None and not (isinstance(a1c, float) and pd.isna(a1c)):
-            if float(a1c) >= 7.5:
-                r.append("Elevated HbA1c (≥ 7.5)")
+        if a1c is not None and pd.notna(a1c) and float(a1c) >= 7.5:
+            r.append("Elevated HbA1c (≥ 7.5)")
     except Exception:
         pass
 
@@ -185,7 +191,7 @@ def build_recommendation(pred: str, risk_level: str, followup: str, quality_flag
 
 class GradCAM:
     """
-    Fixed: always upsamples CAM to 224x224 (no more 7x7 -> 224 broadcast crash).
+    Fixed: always upsamples CAM to 224x224.
     """
     def __init__(self, model: torch.nn.Module, target_layer: torch.nn.Module):
         self.model = model
@@ -207,7 +213,7 @@ class GradCAM:
 
     def generate(self, x: torch.Tensor, target_index: int = 1) -> np.ndarray:
         self.model.zero_grad(set_to_none=True)
-        logits = self.model(x)                 # [1,2]
+        logits = self.model(x)  # [1,2]
         score = logits[:, target_index].sum()
         score.backward()
 

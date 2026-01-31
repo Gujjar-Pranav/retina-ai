@@ -47,6 +47,9 @@ def _fmt_float(v: Any, ndigits: int = 4, default: str = "—") -> str:
             return default
         if isinstance(v, float) and pd.isna(v):
             return default
+        s = str(v).strip()
+        if s == "":
+            return default
         return f"{float(v):.{ndigits}f}"
     except Exception:
         return default
@@ -57,6 +60,62 @@ def _clip(text: str, max_chars: int) -> str:
     if len(t) <= max_chars:
         return t
     return t[: max_chars - 1].rstrip() + "…"
+
+
+def _to_bool(v: Any) -> bool:
+    """
+    Correctly interpret Excel/strings:
+    - True/False
+    - 1/0
+    - "Yes"/"No", "Y"/"N"
+    - "true"/"false"
+    IMPORTANT: bool("No") is True in Python -> we must avoid that.
+    """
+    if v is None:
+        return False
+
+    # pandas NaN
+    try:
+        if isinstance(v, float) and pd.isna(v):
+            return False
+    except Exception:
+        pass
+
+    if isinstance(v, bool):
+        return v
+
+    # ints
+    try:
+        import numpy as np  # local import safe
+        if isinstance(v, (int, np.integer)):
+            return int(v) != 0
+        if isinstance(v, (float, np.floating)):
+            return float(v) != 0.0
+    except Exception:
+        # if numpy not present for some reason
+        if isinstance(v, int):
+            return int(v) != 0
+        if isinstance(v, float):
+            return float(v) != 0.0
+
+    if isinstance(v, str):
+        s = v.strip().lower()
+        if s in {"yes", "y", "true", "t", "1"}:
+            return True
+        if s in {"no", "n", "false", "f", "0", "", "none", "na", "n/a"}:
+            return False
+        # unknown strings -> default False (safer for clinical flags)
+        return False
+
+    return False
+
+
+def _first(d: Dict[str, Any], keys: List[str], default=None):
+    """Return first available key in dict."""
+    for k in keys:
+        if k in d:
+            return d.get(k)
+    return default
 
 
 def _wrap_text_limited(
@@ -98,7 +157,6 @@ def _wrap_text_limited(
                 if len(lines) >= max_lines:
                     break
             else:
-                # single word too long -> clip
                 clipped = w
                 while clipped and c.stringWidth(clipped + "…", font_name, font_size) > max_width:
                     clipped = clipped[:-1]
@@ -255,9 +313,6 @@ def generate_clinical_pdf(
         start_offset: float,
         step: float,
     ) -> None:
-        """
-        Cleanly aligned key/value rows inside a card.
-        """
         key_x = x + 3.2 * mm
         val_x = x + w - 3.2 * mm
         yy = y_top - start_offset
@@ -277,7 +332,6 @@ def generate_clinical_pdf(
 
     gap = 6 * mm
     col_w = (x1 - x0 - gap) / 2
-    # slightly taller to avoid last-row cutoff
     card_h = 34 * mm
 
     left_x = x0
@@ -287,13 +341,18 @@ def generate_clinical_pdf(
     card(left_x, y_top, col_w, card_h, "Patient")
     card(right_x, y_top, col_w, card_h, "Clinician")
 
-    p_id = _safe(patient.get("patient_id"))
-    p_name = _safe(patient.get("name"))
-    p_age = _safe(patient.get("age"))
-    p_sex = _safe(patient.get("sex"))
-    p_dur = _safe(patient.get("diabetes_years"))
-    p_htn = "Yes" if bool(patient.get("hypertension")) else "No"
-    p_a1c = _fmt_float(patient.get("last_hba1c"), 1)
+    p_id = _safe(_first(patient, ["patient_id", "patientID", "pid"], default=None))
+    p_name = _safe(_first(patient, ["name", "patient_name"], default=None))
+    p_age = _safe(_first(patient, ["age"], default=None))
+    p_sex = _safe(_first(patient, ["sex", "gender"], default=None))
+    p_dur = _safe(_first(patient, ["diabetes_years", "dm_years", "dm_duration", "diabetes_duration"], default=None))
+
+    # ✅ FIX: correct string bool parsing
+    p_htn = "Yes" if _to_bool(_first(patient, ["hypertension", "htn", "high_bp"], default=False)) else "No"
+
+    # ✅ FIX: HbA1c key variants + better float parsing
+    p_a1c_val = _first(patient, ["last_hba1c", "hba1c", "hba1c_last", "hbA1c", "hb_a1c"], default=None)
+    p_a1c = _fmt_float(p_a1c_val, 1)
 
     kv_rows(
         left_x,
@@ -311,10 +370,10 @@ def generate_clinical_pdf(
         step=4.45 * mm,
     )
 
-    d_id = _safe(doctor.get("doctor_id"))
-    d_name = _safe(doctor.get("name"))
-    d_qual = _safe(doctor.get("qualification"))
-    d_fac = _safe(doctor.get("hospital"))
+    d_id = _safe(_first(doctor, ["doctor_id", "clinician_id", "doc_id"], default=None))
+    d_name = _safe(_first(doctor, ["name", "clinician_name"], default=None))
+    d_qual = _safe(_first(doctor, ["qualification"], default=None))
+    d_fac = _safe(_first(doctor, ["hospital", "facility"], default=None))
 
     kv_rows(
         right_x,
@@ -381,7 +440,7 @@ def generate_clinical_pdf(
 
     y -= (bar_h + 5.5 * mm)
 
-    # Recommendation box (more height + clean wrap)
+    # Recommendation box
     rec_h = 24 * mm
     c.setFillColor(colors.white)
     c.setStrokeColor(BORDER)
@@ -409,7 +468,7 @@ def generate_clinical_pdf(
     # ---------------- Risk factors + Image quality (2 cards) ----------------
     left_w = (x1 - x0 - gap) / 2
     right_w = left_w
-    block_h = 30 * mm  # a bit taller to avoid overlap
+    block_h = 30 * mm
     y_top = y
 
     # Risk factors card
@@ -441,7 +500,7 @@ def generate_clinical_pdf(
         c.drawString(rf_x, rf_y, "• Not available")
         c.setFillColor(INK)
 
-    # Image quality card (FIXED: no overlap, clean stacked rows)
+    # Image quality card
     qx = x0 + left_w + gap
     c.setFillColor(colors.white)
     c.setStrokeColor(BORDER)
@@ -459,12 +518,14 @@ def generate_clinical_pdf(
     cs = encounter.get("contrast_std")
     sp = encounter.get("sharpness_proxy")
 
-    # Top line
     c.setFillColor(MUTED)
     c.setFont(FONT_B, 8.6)
-    c.drawString(qx + 3.2 * mm, y_top - 9.8 * mm, f"Quality gate: {'On' if q_enabled else 'Off'}  •  Flagged: {'Yes' if q_flagged else 'No'}")
+    c.drawString(
+        qx + 3.2 * mm,
+        y_top - 9.8 * mm,
+        f"Quality gate: {'On' if q_enabled else 'Off'}  •  Flagged: {'Yes' if q_flagged else 'No'}",
+    )
 
-    # KPI lines
     base_y = y_top - 15.0 * mm
     c.setFillColor(INK)
     c.setFont(FONT_SB, 8.7)
@@ -472,7 +533,6 @@ def generate_clinical_pdf(
     c.drawString(qx + 3.2 * mm, base_y - 4.6 * mm, f"Contrast: {_fmt_float(cs, 4)}")
     c.drawString(qx + 3.2 * mm, base_y - 9.2 * mm, f"Sharpness: {_fmt_float(sp, 4)}")
 
-    # Reason (bounded)
     c.setFillColor(MUTED)
     c.setFont(FONT_B, 8.6)
     c.drawString(qx + 3.2 * mm, y_top - 28.5 * mm, f"Reason: {_clip(q_reason, 60)}")
@@ -482,7 +542,7 @@ def generate_clinical_pdf(
     # ---------------- Explainability images ----------------
     section("Explainability (Grad-CAM)")
 
-    tile_h = 42 * mm  # bigger so fundus is clearly visible
+    tile_h = 42 * mm
     tile_w = (x1 - x0 - gap) / 2
     y_top = y
 
@@ -495,14 +555,12 @@ def generate_clinical_pdf(
         c.setFont(FONT_SB, 9)
         c.drawString(x + 3.2 * mm, y_top - 4.2 * mm, title)
 
-        # Inner image box (larger + centered fit)
         pad = 3.2 * mm
         img_box_x = x + pad
         img_box_y = (y_top - tile_h) + pad
         img_box_w = tile_w - 2 * pad
-        img_box_h = tile_h - (pad * 2) - 6.0 * mm  # reserve header title space
+        img_box_h = tile_h - (pad * 2) - 6.0 * mm
 
-        # shift box up to sit under title neatly
         img_box_y += 2.0 * mm
 
         c.setStrokeColor(colors.HexColor("#E5E7EB"))
@@ -582,7 +640,6 @@ def generate_clinical_pdf(
         max_lines=2,
     )
 
-    # Single page only
     c.showPage()
     c.save()
     return out_path
