@@ -1,7 +1,7 @@
 # src/screening_core.py
 from __future__ import annotations
 
-from typing import Dict, Any, Tuple, List, Optional
+from typing import Dict, Any, Tuple, List
 
 import numpy as np
 import pandas as pd
@@ -67,7 +67,6 @@ def predict_2class(model: torch.nn.Module, device: torch.device, img: Image.Imag
     return {"p_dr": p_dr, "p_no_dr": p_no_dr, "pred": pred, "confidence": confidence}
 
 
-
 def risk_stratification(p_dr: float) -> Tuple[str, str]:
     if p_dr < 0.20:
         return "Low", "Annual"
@@ -78,25 +77,73 @@ def risk_stratification(p_dr: float) -> Tuple[str, str]:
     return "High", "1–4 weeks"
 
 
-def derive_risk_factors(patient_row: Dict[str, Any]) -> List[str]:
-    r: List[str] = []
+def _to_bool(v: Any) -> bool:
+    """
+    Robust boolean parsing for values coming from Excel / forms.
+    Handles: True/False, 1/0, "Yes"/"No", "TRUE"/"FALSE", "Y"/"N", "1"/"0", NaN, blanks.
+    """
+    if v is None:
+        return False
+
+    # pandas NaN
     try:
-        yrs = patient_row.get("diabetes_years", None)
-        if pd.notna(yrs) and float(yrs) >= 10:
-            r.append("Diabetes duration ≥ 10 years")
+        if isinstance(v, float) and pd.isna(v):
+            return False
     except Exception:
         pass
 
+    if isinstance(v, bool):
+        return v
+
+    # numeric
+    if isinstance(v, (int, np.integer)):
+        return int(v) != 0
+    if isinstance(v, (float, np.floating)):
+        try:
+            if pd.isna(v):
+                return False
+        except Exception:
+            pass
+        return float(v) != 0.0
+
+    s = str(v).strip().lower()
+    if s == "" or s in {"nan", "none", "null"}:
+        return False
+
+    if s in {"yes", "y", "true", "t", "1", "on"}:
+        return True
+    if s in {"no", "n", "false", "f", "0", "off"}:
+        return False
+
+    # fallback: treat unknown strings as False (safer clinically)
+    return False
+
+
+def derive_risk_factors(patient_row: Dict[str, Any]) -> List[str]:
+    r: List[str] = []
+
+    # Diabetes duration
     try:
-        if bool(patient_row.get("hypertension", False)):
+        yrs = patient_row.get("diabetes_years", None)
+        if yrs is not None and not (isinstance(yrs, float) and pd.isna(yrs)):
+            if float(yrs) >= 10:
+                r.append("Diabetes duration ≥ 10 years")
+    except Exception:
+        pass
+
+    # Hypertension (FIXED)
+    try:
+        if _to_bool(patient_row.get("hypertension", False)):
             r.append("Hypertension")
     except Exception:
         pass
 
+    # HbA1c
     try:
         a1c = patient_row.get("last_hba1c", None)
-        if pd.notna(a1c) and float(a1c) >= 7.5:
-            r.append("Elevated HbA1c (≥ 7.5)")
+        if a1c is not None and not (isinstance(a1c, float) and pd.isna(a1c)):
+            if float(a1c) >= 7.5:
+                r.append("Elevated HbA1c (≥ 7.5)")
     except Exception:
         pass
 
