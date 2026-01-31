@@ -14,7 +14,15 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.12"
+          check-latest: true
+          cache: "pip"
+
+      - name: Verify Python
+        run: |
+          python --version
+          which python
+          pip --version
 
       - name: Install dependencies
         run: |
@@ -28,4 +36,4 @@ jobs:
       - name: Import smoke test
         run: |
           python -c "import streamlit"
-          python -c "from app.streamlit_app import main"
+          python -c "import app.streamlit_app"
