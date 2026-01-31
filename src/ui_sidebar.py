@@ -1,6 +1,6 @@
 # src/ui_sidebar.py
 import streamlit as st
-from pathlib import Path
+
 
 
 def render_sidebar():

@@ -1,7 +1,7 @@
 from pathlib import Path
 from PIL import Image
 import random
-import os
+
 
 ROOT = Path(__file__).resolve().parents[1]
 APTOS = ROOT / "data/cache_224/aptos"

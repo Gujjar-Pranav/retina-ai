@@ -1,8 +1,6 @@
 # src/ui_screening.py
 from __future__ import annotations
-import io
 
-import base64
 import json
 import re
 import uuid
@@ -14,7 +12,6 @@ from typing import Optional
 
 import pandas as pd
 import streamlit as st
-import streamlit.components.v1 as components
 from PIL import Image
 import torch
 
