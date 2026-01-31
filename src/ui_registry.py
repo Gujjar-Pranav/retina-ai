@@ -76,13 +76,32 @@ def _upsert_row(df: pd.DataFrame, key_col: str, row: dict) -> pd.DataFrame:
                 df[k] = ""
             df.at[idx, k] = v
     else:
-        # add any missing columns
         for k in row.keys():
             if k not in df.columns:
                 df[k] = ""
         df = pd.concat([df, pd.DataFrame([row])], ignore_index=True)
 
     return df
+
+
+def _yn_to_bool(v: str):
+    """Convert 'Yes'/'No'/'' to boolean/None."""
+    s = (v or "").strip().lower()
+    if s == "yes":
+        return True
+    if s == "no":
+        return False
+    return None
+
+
+def _bool_to_yn(v):
+    """Convert stored boolean/'Yes'/'No' to 'Yes'/'No'/'' for UI."""
+    if isinstance(v, bool):
+        return "Yes" if v else "No"
+    s = str(v or "").strip()
+    if s in {"Yes", "No"}:
+        return s
+    return ""
 
 
 # ---------------------------- Main Registry UI ----------------------------
@@ -94,11 +113,9 @@ def render_registry(*, ROOT: Path) -> None:
     patients_xlsx = data_dir / "patients.xlsx"
     doctors_xlsx = data_dir / "doctors.xlsx"
 
-    # Load tables
     p_df = _load_xlsx(patients_xlsx)
     d_df = _load_xlsx(doctors_xlsx)
 
-    # ---------------- Banner (match Screening style) ----------------
     with st.container(border=True):
         st.markdown(
             _html(
@@ -118,7 +135,6 @@ def render_registry(*, ROOT: Path) -> None:
 
     st.markdown("<div class='spacer-16'></div>", unsafe_allow_html=True)
 
-    # ---------------- Two blocks: Patient + Clinician ----------------
     left, right = st.columns([1, 1], gap="large")
 
     # ===================== PATIENT LOOKUP =====================
@@ -135,7 +151,6 @@ def render_registry(*, ROOT: Path) -> None:
 
             patient_id = st.text_input("Patient ID", placeholder="e.g., P-1001", label_visibility="visible").strip()
 
-            # Find existing row
             patient_row = {}
             if patient_id and not p_df.empty and "patient_id" in p_df.columns:
                 hit = p_df[p_df["patient_id"].astype(str) == patient_id]
@@ -150,36 +165,57 @@ def render_registry(*, ROOT: Path) -> None:
                     st.warning("Patient not found. You can create a new patient record.")
                     patient_row = {"patient_id": patient_id}
 
-                # Edit form
+                # ✅ Read HbA1c from either column
+                hba1c_existing = patient_row.get("last_hba1c", patient_row.get("hba1c", ""))
+
+                # ✅ Read hypertension for UI regardless of storage type
+                htn_existing = _bool_to_yn(patient_row.get("hypertension", ""))
+
                 with st.form("patient_form", clear_on_submit=False):
                     name = st.text_input("Full name", value=str(patient_row.get("name", "")))
                     age = st.text_input("Age", value=str(patient_row.get("age", "")))
                     sex = st.selectbox(
                         "Sex",
                         options=["", "Male", "Female", "Other"],
-                        index=["", "Male", "Female", "Other"].index(str(patient_row.get("sex", "")) if str(patient_row.get("sex", "")) in ["Male", "Female", "Other"] else ""),
+                        index=["", "Male", "Female", "Other"].index(
+                            str(patient_row.get("sex", "")) if str(patient_row.get("sex", "")) in ["Male", "Female", "Other"] else ""
+                        ),
                     )
-                    diabetes_years = st.text_input("Diabetes duration (years)", value=str(patient_row.get("diabetes_years", patient_row.get("diabetes_duration_years", ""))))
-                    hba1c = st.text_input("HbA1c (%)", value=str(patient_row.get("hba1c", "")))
+                    diabetes_years = st.text_input(
+                        "Diabetes duration (years)",
+                        value=str(patient_row.get("diabetes_years", patient_row.get("diabetes_duration_years", ""))),
+                    )
+
+                    # ✅ Keep as text input but save to last_hba1c too
+                    hba1c = st.text_input("HbA1c (%)", value=str(hba1c_existing))
+
                     hypertension = st.selectbox(
                         "Hypertension",
                         options=["", "Yes", "No"],
-                        index=["", "Yes", "No"].index(str(patient_row.get("hypertension", "")) if str(patient_row.get("hypertension", "")) in ["Yes", "No"] else ""),
+                        index=["", "Yes", "No"].index(htn_existing if htn_existing in ["Yes", "No"] else ""),
                     )
 
                     st.markdown("<div class='spacer-10'></div>", unsafe_allow_html=True)
                     submitted = st.form_submit_button("💾 Save patient", use_container_width=True)
 
                 if submitted:
+                    htn_bool = _yn_to_bool(hypertension)
+
                     row_out = {
                         "patient_id": patient_id,
                         "name": name.strip(),
                         "age": age.strip(),
                         "sex": sex,
                         "diabetes_years": diabetes_years.strip(),
+
+                        # ✅ store both (compat + new)
                         "hba1c": hba1c.strip(),
-                        "hypertension": hypertension,
+                        "last_hba1c": hba1c.strip(),
+
+                        # ✅ CRITICAL FIX: store as bool, not "Yes"/"No"
+                        "hypertension": htn_bool,
                     }
+
                     p_df = _upsert_row(p_df, "patient_id", row_out)
                     _save_xlsx(p_df, patients_xlsx)
                     st.success("Patient saved ✅")
